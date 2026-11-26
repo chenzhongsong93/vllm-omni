@@ -71,7 +71,7 @@ def test_high_quality_policy_emits_cache_profile_without_deployment_gates():
     assert spec.cache_config.Fn_compute_blocks == 1
     assert spec.cache_config.Bn_compute_blocks == 0
     assert spec.cache_config.max_warmup_steps == 4
-    assert spec.cache_config.residual_diff_threshold == pytest.approx(0.04)
+    assert spec.cache_config.residual_diff_threshold == pytest.approx(0.24)
     assert spec.cache_config.max_continuous_cached_steps == 1
     assert spec.cache_config.enable_taylorseer is False
     assert spec.cache_config.scm_steps_mask_policy is None
