@@ -1089,8 +1089,6 @@ def encode_media(
     if reference_lengths:
         if any(length < 80 or length > 600 for length in reference_lengths):
             raise ValueError("MiniMax H3 audio references must each be between 2 and 15 seconds")
-        if sum(reference_lengths[:embedded_audio_count]) > 600 or sum(reference_lengths[embedded_audio_count:]) > 600:
-            raise ValueError("MiniMax H3 audio references must be at most 15 seconds in total")
 
     ref_blocks: list[dict[str, Any]] = []
     image_shapes = visual_shapes[: len(media.images)]

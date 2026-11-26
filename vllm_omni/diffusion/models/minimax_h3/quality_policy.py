@@ -26,7 +26,7 @@ def _high_quality_cache_config() -> DiffusionCacheConfig:
         Fn_compute_blocks=1,
         Bn_compute_blocks=0,
         max_warmup_steps=4,
-        residual_diff_threshold=0.04,
+        residual_diff_threshold=0.24,
         max_continuous_cached_steps=1,
         enable_taylorseer=False,
         scm_steps_mask_policy=None,
