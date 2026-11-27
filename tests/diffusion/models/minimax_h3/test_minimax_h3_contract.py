@@ -433,7 +433,8 @@ def test_video_codec_options_are_normalized_for_the_encoder():
         normalize_video_codec_options("preset=ultrafast")
 
 
-def test_h3_prepares_resolved_cache_state_immediately_before_denoise():
+def _forward_t2va_with_quality(quality):
+    """Drive MiniMaxH3Pipeline.forward for one t2va request with a mocked quality policy."""
     from vllm_omni.diffusion.models.minimax_h3 import MiniMaxH3Pipeline
     from vllm_omni.diffusion.request import OmniDiffusionRequest
     from vllm_omni.diffusion.worker.request_batch import DiffusionRequestBatch
@@ -466,7 +467,7 @@ def test_h3_prepares_resolved_cache_state_immediately_before_denoise():
     decoded_audio = torch.zeros(1)
     pipeline.decode = Mock(return_value=(torch.zeros(1, 3, 1, 1, 1), decoded_audio))
     sampling = OmniDiffusionSamplingParams(
-        quality="high",
+        quality=quality,
         width=1344,
         height=768,
         fps=24,
@@ -485,17 +486,35 @@ def test_h3_prepares_resolved_cache_state_immediately_before_denoise():
     )
 
     output = pipeline.forward(batch)
+    return SimpleNamespace(pipeline=pipeline, events=events, output=output,
+                           cache_spec=cache_spec, decoded_audio=decoded_audio)
 
-    assert events[0] == ("prepare", cache_spec)
-    assert events[1][0] == "diffuse"
-    pipeline._quality_policy.resolve.assert_called_once_with(
+
+def test_h3_prepares_resolved_cache_state_immediately_before_denoise():
+    run = _forward_t2va_with_quality("high")
+
+    assert run.events[0] == ("prepare", run.cache_spec)
+    assert run.events[1][0] == "diffuse"
+    run.pipeline._quality_policy.resolve.assert_called_once_with(
         quality="high",
         num_inference_steps=50,
         extra_args={"task": "t2va", "aspect_ratio": "16:9"},
     )
-    assert output.output[0].shape == (1, 1, 1, 1, 3)
-    assert output.output[0].dtype == torch.uint8
-    assert output.output[1] is decoded_audio
+    assert run.output.output[0].shape == (1, 1, 1, 1, 3)
+    assert run.output.output[0].dtype == torch.uint8
+    assert run.output.output[1] is run.decoded_audio
+
+
+def test_t2va_request_without_quality_leaves_the_choice_to_the_serving_cache_config():
+    # Only quality=None resolves to the serving ``--cache-config``; "high" would select the
+    # hard-coded high profile and silently ignore the launch parameters.
+    run = _forward_t2va_with_quality(None)
+
+    run.pipeline._quality_policy.resolve.assert_called_once_with(
+        quality=None,
+        num_inference_steps=50,
+        extra_args={"task": "t2va", "aspect_ratio": "16:9"},
+    )
 
 
 def test_pipeline_import_registry_and_component_discovery():
