@@ -3390,17 +3390,6 @@ class MiniMaxH3Pipeline(
             except ValueError as exc:
                 logger.warning("Rejecting optional AdaLN sidecar for this schedule; using runtime cache: %s", exc)
                 cache.clear()
-        # T2VA requests default to the high-quality Cache-DiT profile so
-        # callers get quality-accelerated generation without setting the
-        # flag explicitly.  Explicit ``lossless`` still wins, and step
-        # execution keeps its uncached shared-transformer contract.
-        if (
-            task == "t2va"
-            and sampling.quality is None
-            and not bool(getattr(self.od_config, "step_execution", False))
-        ):
-            sampling.quality = "high"
-            logger.info("MiniMax H3 t2va request defaulted quality to high")
         quality_plan = self._quality_policy.resolve(
             quality=sampling.quality,
             num_inference_steps=num_steps,
