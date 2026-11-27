@@ -433,8 +433,12 @@ def test_video_codec_options_are_normalized_for_the_encoder():
         normalize_video_codec_options("preset=ultrafast")
 
 
-def _forward_t2va_with_quality(quality):
-    """Drive MiniMaxH3Pipeline.forward for one t2va request with a mocked quality policy."""
+def _forward_t2va_with_quality(quality, *, extra_args=None, policy=None):
+    """Drive MiniMaxH3Pipeline.forward for one t2va request.
+
+    ``policy`` replaces the default mocked quality policy (pass a real
+    ``MiniMaxH3QualityPolicy`` to exercise request admission end to end).
+    """
     from vllm_omni.diffusion.models.minimax_h3 import MiniMaxH3Pipeline
     from vllm_omni.diffusion.request import OmniDiffusionRequest
     from vllm_omni.diffusion.worker.request_batch import DiffusionRequestBatch
@@ -454,8 +458,11 @@ def _forward_t2va_with_quality(quality):
     pipeline.load_vae_encoder = False
     cache_spec = object()
     quality_plan = SimpleNamespace(cache_dit=cache_spec)
-    pipeline._quality_policy = Mock()
-    pipeline._quality_policy.resolve.return_value = quality_plan
+    if policy is None:
+        pipeline._quality_policy = Mock()
+        pipeline._quality_policy.resolve.return_value = quality_plan
+    else:
+        pipeline._quality_policy = policy
     events = []
     pipeline._cache_dit_runtime = SimpleNamespace(prepare=lambda spec: events.append(("prepare", spec)))
 
@@ -473,7 +480,7 @@ def _forward_t2va_with_quality(quality):
         fps=24,
         num_frames=124,
         num_inference_steps=50,
-        extra_args={"task": "t2va", "aspect_ratio": "16:9"},
+        extra_args={"task": "t2va", "aspect_ratio": "16:9", **(extra_args or {})},
     )
     batch = DiffusionRequestBatch(
         [
@@ -486,8 +493,9 @@ def _forward_t2va_with_quality(quality):
     )
 
     output = pipeline.forward(batch)
-    return SimpleNamespace(pipeline=pipeline, events=events, output=output,
-                           cache_spec=cache_spec, decoded_audio=decoded_audio)
+    return SimpleNamespace(
+        pipeline=pipeline, events=events, output=output, cache_spec=cache_spec, decoded_audio=decoded_audio
+    )
 
 
 def test_h3_prepares_resolved_cache_state_immediately_before_denoise():
@@ -3985,3 +3993,24 @@ def test_request_cancellation_at_prepare_and_decode_boundaries(preencode, cancel
         pipeline.decode_to_mp4.assert_not_called()
     finally:
         registry.close()
+
+
+def _serving_policy(cache_backend):
+    from vllm_omni.diffusion.data import DiffusionCacheConfig
+    from vllm_omni.diffusion.models.minimax_h3.quality_policy import MiniMaxH3QualityPolicy
+
+    return MiniMaxH3QualityPolicy(
+        SimpleNamespace(cache_backend=cache_backend, cache_config=DiffusionCacheConfig())
+    )
+
+
+def test_t2va_force_refresh_with_omitted_quality_is_rejected_when_the_server_has_no_cache():
+    # The force-refresh hint needs a Cache-DiT target. Before the serving default was restored
+    # this request silently ran the hard-coded high profile on a server started without a cache;
+    # it is now an explicit client error, as it already was for every other H3 task.
+    from vllm_omni.errors import OmniClientError
+
+    with pytest.raises(OmniClientError, match="require an active Cache-DiT request target"):
+        _forward_t2va_with_quality(
+            None, extra_args={"force_refresh_step_hint": 7}, policy=_serving_policy("none")
+        )

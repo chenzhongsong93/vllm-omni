@@ -660,7 +660,8 @@ def test_control_rejects_external_vae_encoder_before_weight_loading(control_star
         resolve_root.assert_not_called()
 
 
-def test_encoder_conditioning_keeps_control_separate_from_latent_edit(monkeypatch):
+def _control_encoder_pipeline(monkeypatch):
+    """A request-mode control pipeline with every heavy stage stubbed out."""
     from vllm_omni.diffusion.models.minimax_h3 import pipeline_minimax_h3 as pipeline_module
 
     pipeline = object.__new__(pipeline_module.MiniMaxH3Pipeline)
@@ -710,17 +711,29 @@ def test_encoder_conditioning_keeps_control_separate_from_latent_edit(monkeypatc
         audio_edit_clean_rows=None,
         audio_edit_mask=None,
     )
-    sampling = SimpleNamespace(
-        extra_args={"canny": {"control_context_scale": 0.5}},
-        quality="lossless",
-        seed=7,
-        num_outputs_per_prompt=1,
-    )
     pixels = torch.ones(1, 3, num_frames, 32, 32)
     rows = torch.ones(planner.video_latent_t(num_frames) * 4, 196)
     media = {"control_path": "control.mkv"}
     monkeypatch.setattr(pipeline_module, "load_control_pixels", lambda *args, **kwargs: pixels)
     monkeypatch.setattr(pipeline_module, "build_control_rows", lambda *args, **kwargs: rows)
+    return pipeline, conditioning, media, rows
+
+
+def _control_sampling(**overrides):
+    values = dict(
+        extra_args={"canny": {"control_context_scale": 0.5}},
+        quality="lossless",
+        seed=7,
+        num_outputs_per_prompt=1,
+    )
+    values.update(overrides)
+    return SimpleNamespace(**values)
+
+
+def test_encoder_conditioning_keeps_control_separate_from_latent_edit(monkeypatch):
+    from vllm_omni.diffusion.models.minimax_h3 import pipeline_minimax_h3 as pipeline_module
+    pipeline, conditioning, media, rows = _control_encoder_pipeline(monkeypatch)
+    sampling = _control_sampling()
 
     context = pipeline._prepare_encoder_conditioning_inputs(conditioning, sampling, control_media=media)
 
@@ -747,3 +760,24 @@ def test_encoder_conditioning_keeps_control_separate_from_latent_edit(monkeypatc
     assert same_canvas["control_rows"] is rows
     assert same_canvas["latent_upscale"] is target
     assert same_canvas["latent_refine"] is refine
+
+
+def test_control_with_omitted_quality_never_prepares_a_cache(monkeypatch):
+    # A control server cannot run a cache backend. An omitted ``quality`` used to be forced
+    # to ``high`` after the control guard and silently prepared a Cache-DiT plan for the request.
+    from vllm_omni.diffusion.data import DiffusionCacheConfig
+    from vllm_omni.diffusion.models.minimax_h3.quality_policy import MiniMaxH3QualityPolicy
+
+    pipeline, conditioning, media, _ = _control_encoder_pipeline(monkeypatch)
+    prepared = []
+    pipeline.od_config.cache_backend = "none"
+    pipeline.od_config.cache_config = DiffusionCacheConfig()
+    pipeline._quality_policy = MiniMaxH3QualityPolicy(pipeline.od_config)
+    pipeline._cache_dit_runtime = SimpleNamespace(prepare=prepared.append)
+
+    context = pipeline._prepare_encoder_conditioning_inputs(
+        conditioning, _control_sampling(quality=None), control_media=media
+    )
+
+    assert prepared == [None]
+    assert context["control_rows"] is not None

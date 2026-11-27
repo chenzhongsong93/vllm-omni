@@ -305,3 +305,35 @@ def test_guided_ref2va_references_are_scaled_down_to_the_output_area(monkeypatch
     assert prepared.images[0].size == (1440, 704)
     assert prepared.condition_labels == [("image", 1)]
     assert len(prepared.media.timeline_guides) == 1
+
+
+def test_t2va_guide_with_omitted_quality_reaches_the_gate_cache_free(monkeypatch):
+    # Guides are only admitted without a cache plan. On a server without a cache backend an
+    # omitted ``quality`` must stay cache-free; forcing it to ``high`` used to reject the request.
+    from vllm_omni.diffusion.data import DiffusionCacheConfig
+    from vllm_omni.diffusion.models.minimax_h3.quality_policy import MiniMaxH3QualityPolicy
+    from vllm_omni.inputs.data import OmniDiffusionSamplingParams
+
+    seen = {}
+
+    class _StopAtGate(Exception):
+        pass
+
+    def gate(sampling, task, *, cache_dit, turbo, native_lora):
+        seen.update(task=task, cache_dit=cache_dit)
+        raise _StopAtGate
+
+    pipeline = _guide_pipeline()
+    pipeline._quality_policy = MiniMaxH3QualityPolicy(
+        SimpleNamespace(cache_backend="none", cache_config=DiffusionCacheConfig())
+    )
+    monkeypatch.setattr(pipeline, "_validate_timeline_guide_sampling", gate)
+    conditioning = _conditioning(
+        _guide_media(images=(torch.zeros(64, 32, 3, dtype=torch.uint8),), task="t2va")
+    )
+    sampling = OmniDiffusionSamplingParams(quality=None, fps=24, num_inference_steps=4, extra_args={})
+
+    with pytest.raises(_StopAtGate):
+        pipeline._prepare_encoder_conditioning_inputs(conditioning, sampling)
+
+    assert seen == {"task": "t2va", "cache_dit": None}
