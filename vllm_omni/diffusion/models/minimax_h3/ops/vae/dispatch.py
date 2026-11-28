@@ -12,6 +12,7 @@ from vllm.triton_utils import HAS_TRITON
 
 from vllm_omni.platforms import current_omni_platform
 
+from .npu_qk_norm_rope import npu_rms_norm_available, try_qk_norm_rope_npu
 from .qk_norm_rope import try_qk_norm_rope_exact
 from .scaled_residual import try_scaled_residual_exact
 
@@ -37,6 +38,23 @@ class H3VAEOperatorSet:
     supports: Callable[[torch.device], bool]
     qk_norm_rope: QKNormRopeOp
     scaled_residual: ScaledResidualOp
+
+
+def _supports_npu(device: torch.device) -> bool:
+    """Ascend NPU: the fused norm+RoPE kernels live in ``torch_npu``."""
+
+    return device.type == "npu" and npu_rms_norm_available()
+
+
+def _no_scaled_residual(
+    hidden_states: torch.Tensor,
+    update: torch.Tensor,
+    scale: torch.Tensor,
+) -> torch.Tensor | None:
+    """Keep the eager ``hidden + update * scale``: no NPU kernel is exact here."""
+
+    del hidden_states, update, scale
+    return None
 
 
 def _supports_cuda_capability(device: torch.device, expected: int) -> bool:
@@ -68,6 +86,11 @@ def _supports_cuda_sm103(device: torch.device) -> bool:
 # Keep hardware selection flat: adding a backend means adding one operator set,
 # without changing the installer or the model execution path.
 H3_VAE_OPERATOR_TABLE: tuple[H3VAEOperatorSet, ...] = (
+    H3VAEOperatorSet(
+        supports=_supports_npu,
+        qk_norm_rope=try_qk_norm_rope_npu,
+        scaled_residual=_no_scaled_residual,
+    ),
     H3VAEOperatorSet(
         supports=_supports_cuda_sm90,
         qk_norm_rope=try_qk_norm_rope_exact,

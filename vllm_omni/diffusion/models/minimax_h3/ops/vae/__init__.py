@@ -86,6 +86,9 @@ def _optimized_attention(
     return self.to_out(hidden_states)
 
 
+_BLOCK_ACTIVATION_DTYPES = (torch.float32, torch.float16, torch.bfloat16)
+
+
 def _optimized_transformer_block(
     self: nn.Module,
     hidden_states: torch.Tensor,
@@ -93,7 +96,10 @@ def _optimized_transformer_block(
     pack_info: dict[str, Any] | None = None,
 ) -> torch.Tensor:
     pack_info = {} if pack_info is None else pack_info
-    if torch.compiler.is_compiling() or hidden_states.dtype != torch.float32:
+    # The decoder runs the block under FP16 autocast, so the activations arrive
+    # as FP16 even though the norms are FP32. The reference casts to FP32 for
+    # each norm and back, which this path reproduces exactly.
+    if torch.compiler.is_compiling() or hidden_states.dtype not in _BLOCK_ACTIVATION_DTYPES:
         return type(self).forward(self, hidden_states, rotary_pos_emb, pack_info)
 
     normalized = self.norm1(hidden_states.float()).to(hidden_states.dtype)
